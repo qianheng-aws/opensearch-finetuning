@@ -35,16 +35,23 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
     return p.netloc, p.path.lstrip("/")
 
 
+def _aws_region() -> str | None:
+    """Resolve AWS region from env. SageMaker training containers set
+    AWS_DEFAULT_REGION but not AWS_REGION; boto3 reads either."""
+    import os
+    return os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+
+
 def _build_s3_client():
-    return boto3.client("s3")
+    return boto3.client("s3", region_name=_aws_region())
 
 
 def _build_bedrock_client():
-    return boto3.client("bedrock-runtime")
+    return boto3.client("bedrock-runtime", region_name=_aws_region())
 
 
 def _build_ddb_resource():
-    return boto3.resource("dynamodb")
+    return boto3.resource("dynamodb", region_name=_aws_region())
 
 
 def _read_jsonl(s3, uri: str) -> list[dict]:

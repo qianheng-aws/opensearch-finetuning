@@ -8,11 +8,31 @@ from unittest.mock import MagicMock
 import pytest
 
 from evaluate_judge import (
+    _aws_region,
     build_judge_pairs,
     parse_args,
     main,
     _to_dynamodb_safe,
 )
+
+
+def test_aws_region_reads_AWS_REGION(monkeypatch):
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    assert _aws_region() == "us-east-1"
+
+
+def test_aws_region_falls_back_to_AWS_DEFAULT_REGION(monkeypatch):
+    """SageMaker training containers set AWS_DEFAULT_REGION but not AWS_REGION."""
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-2")
+    assert _aws_region() == "us-west-2"
+
+
+def test_aws_region_returns_None_when_neither_set(monkeypatch):
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    assert _aws_region() is None
 
 
 def test_parse_args_required():

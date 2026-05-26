@@ -34,7 +34,9 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
 
 
 def _build_s3_client():
-    return boto3.client("s3")
+    import os
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    return boto3.client("s3", region_name=region)
 
 
 def read_jsonl_from_s3(s3, uri: str) -> list[dict]:
