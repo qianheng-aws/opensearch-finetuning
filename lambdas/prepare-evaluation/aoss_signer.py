@@ -1,16 +1,21 @@
-"""SigV4-signed AOSS request helper, mirroring the pattern used in
-lambdas/data-extractor/index.py.
+"""SigV4-signed AOSS request helper, matching the pattern used in
+lambdas/data-extractor/index.py and refresh_embedding_ecs/tests/setup_test_index.py.
+
+We use requests + requests_aws4auth here (NOT urllib + botocore SigV4Auth)
+because AOSS rejects requests signed by botocore.SigV4Auth with HTTP 403
+when a body is sent — likely a header / hash mismatch in how botocore
+serializes the request to urllib. requests_aws4auth handles AOSS correctly
+across all data-plane operations.
+
+Both `requests` and `requests_aws4auth` are bundled into the Lambda zip
+by `build.sh` (they're not in the Lambda Python runtime by default).
 """
 
 from __future__ import annotations
 
-import json
-import urllib.error
-import urllib.request
-
 import boto3
-from botocore.auth import SigV4Auth
-from botocore.awsrequest import AWSRequest
+import requests
+from requests_aws4auth import AWS4Auth
 
 
 def signed_post(endpoint: str, path: str, body: dict, service: str = "aoss") -> dict:
@@ -19,25 +24,32 @@ def signed_post(endpoint: str, path: str, body: dict, service: str = "aoss") -> 
     For OpenSearch Service domains, pass service='es'. For AOSS, 'aoss'.
     """
     session = boto3.Session()
-    credentials = session.get_credentials()
+    creds = session.get_credentials()
+    if creds is None:
+        raise RuntimeError("No AWS credentials available")
+    creds = creds.get_frozen_credentials()
     region = session.region_name
     if region is None:
         raise RuntimeError("AWS region must be set in environment")
 
+    auth = AWS4Auth(
+        creds.access_key,
+        creds.secret_key,
+        region,
+        service,
+        session_token=creds.token,
+    )
+
     url = endpoint.rstrip("/") + path
-    data = json.dumps(body).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
-
-    req = AWSRequest(method="POST", url=url, data=data, headers=headers)
-    SigV4Auth(credentials, service, region).add_auth(req)
-
-    out_headers = dict(req.headers)
-    py_req = urllib.request.Request(url, data=data, headers=out_headers, method="POST")
-    try:
-        with urllib.request.urlopen(py_req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        body_text = e.read().decode("utf-8", errors="replace")
+    resp = requests.post(
+        url,
+        auth=auth,
+        headers={"Content-Type": "application/json"},
+        json=body,
+        timeout=30,
+    )
+    if resp.status_code >= 300:
         raise RuntimeError(
-            f"AOSS request failed: HTTP {e.code} {e.reason}: {body_text}"
-        ) from e
+            f"AOSS request failed: HTTP {resp.status_code}: {resp.text[:500]}"
+        )
+    return resp.json()

@@ -12,11 +12,27 @@ mkdir -p "$BUILD_DIR"
 echo "==> Building lambda zips and training archive..."
 
 # Lambda zips — each directory under lambdas/ becomes <dir-name>-lambda.zip
+# If a Lambda directory contains requirements.txt, vendor those deps into the
+# zip via `pip install --target` (Lambda Python runtime doesn't include them).
 for dir in "$SCRIPT_DIR"/lambdas/*/; do
     name="$(basename "$dir")"
     zip_name="${name}-lambda.zip"
     echo "  Packaging $zip_name"
-    (cd "$dir" && zip -r "$BUILD_DIR/$zip_name" . -x '*.pyc' '__pycache__/*' '.pytest_cache/*' 'test_*.py')
+    if [ -f "$dir/requirements.txt" ]; then
+        # Vendor deps into a clean staging dir, then zip alongside Lambda code.
+        stage="$BUILD_DIR/${name}-stage"
+        rm -rf "$stage"
+        mkdir -p "$stage"
+        # Copy the Lambda source (skip tests/cache/etc)
+        rsync -a --exclude='__pycache__' --exclude='.pytest_cache' \
+              --exclude='test_*.py' --exclude='*.pyc' "$dir"/ "$stage"/
+        # Install dependencies into the same dir
+        pip install --quiet --target "$stage" -r "$dir/requirements.txt"
+        (cd "$stage" && zip -rq "$BUILD_DIR/$zip_name" . -x '*.pyc' '__pycache__/*')
+        rm -rf "$stage"
+    else
+        (cd "$dir" && zip -r "$BUILD_DIR/$zip_name" . -x '*.pyc' '__pycache__/*' '.pytest_cache/*' 'test_*.py')
+    fi
 done
 
 # Training script tarball — flat files (no top-level directory)
