@@ -1,0 +1,37 @@
+{
+  "TrainingJobName": "{JOB_NAME}",
+  "AlgorithmSpecification": {
+    "TrainingImage": "763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-training:2.6-gpu-py312",
+    "TrainingInputMode": "File"
+  },
+  "OutputDataConfig": {
+    "S3OutputPath": "s3://yuanchu-data/{RUN_PREFIX}/stage-c-output/"
+  },
+  "ResourceConfig": {
+    "InstanceCount": 1,
+    "InstanceType": "ml.m5.xlarge",
+    "VolumeSizeInGB": 30
+  },
+  "StoppingCondition": {
+    "MaxRuntimeInSeconds": 3600
+  },
+  "RoleArn": "arn:aws:iam::330700426359:role/service-role/AmazonSageMaker-ExecutionRole-20260126T154349",
+  "HyperParameters": {
+    "sagemaker_program": "evaluate_judge.py",
+    "sagemaker_submit_directory": "s3://yuanchu-data/{RUN_PREFIX}/training-script.tar.gz",
+    "queries-s3": "s3://yuanchu-data/{RUN_PREFIX}/run-1/queries.jsonl",
+    "pool-s3": "s3://yuanchu-data/{RUN_PREFIX}/run-1/pool_corpus.jsonl",
+    "base-top10-s3": "s3://yuanchu-data/{RUN_PREFIX}/run-1/base_top10.jsonl",
+    "ft-top10-s3": "s3://yuanchu-data/{RUN_PREFIX}/run-1/ft_top10.jsonl",
+    "judge-model-id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "judge-concurrency": "16",
+    "top-k": "10",
+    "bootstrap-resamples": "1000",
+    "seed": "42",
+    "ddb-table-name": "{DDB_TABLE}",
+    "task-id": "{JOB_NAME}",
+    "out-s3": "s3://yuanchu-data/{RUN_PREFIX}/run-1/evaluation_report.json",
+    "base-model-id": "Alibaba-NLP/gte-multilingual-base"
+  },
+  "EnableManagedSpotTraining": false
+}

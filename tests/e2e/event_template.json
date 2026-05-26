@@ -1,0 +1,14 @@
+{
+  "task_id": "{TASK_ID}",
+  "model_name": "{MODEL_NAME}",
+  "opensearch_endpoint": "https://5l2oxy87av1hbwupnpoc.us-west-2.aoss.amazonaws.com",
+  "opensearch_index_name": "ms-marco",
+  "eval_queries_s3": "s3://yuanchu-data/{RUN_PREFIX}/process-output/model.tar.gz",
+  "data_bucket": "yuanchu-data",
+  "data_prefix": "{RUN_PREFIX}/run-1",
+  "num_eval_queries": 100,
+  "pool_size": 100,
+  "top_k": 10,
+  "seed": 42,
+  "text_field": "text"
+}
