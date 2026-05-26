@@ -16,7 +16,7 @@ for dir in "$SCRIPT_DIR"/lambdas/*/; do
     name="$(basename "$dir")"
     zip_name="${name}-lambda.zip"
     echo "  Packaging $zip_name"
-    (cd "$dir" && zip -r "$BUILD_DIR/$zip_name" . -x '*.pyc' '__pycache__/*')
+    (cd "$dir" && zip -r "$BUILD_DIR/$zip_name" . -x '*.pyc' '__pycache__/*' '.pytest_cache/*' 'test_*.py')
 done
 
 # Training script tarball — flat files (no top-level directory)
@@ -39,6 +39,7 @@ gh release upload "$TAG" \
     "$BUILD_DIR/s3-validator-lambda.zip" \
     "$BUILD_DIR/bedrock-orchestrator-lambda.zip" \
     "$BUILD_DIR/register-model-lambda.zip" \
+    "$BUILD_DIR/prepare-evaluation-lambda.zip" \
     "$BUILD_DIR/training-script.tar.gz" \
     --repo "$REPO" \
     --clobber
