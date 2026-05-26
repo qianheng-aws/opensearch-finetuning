@@ -43,6 +43,22 @@ def test_read_jsonl_from_s3():
     s3.get_object.assert_called_once_with(Bucket="bucket", Key="key")
 
 
+def test_read_jsonl_handles_unicode_line_separators_in_text():
+    """Regression: U+2028 (LS) inside doc text was breaking str.splitlines()
+    into mid-record splits. Verify NDJSON parses correctly when text contains
+    Unicode line separator-like chars."""
+    s3 = MagicMock()
+    # chr(0x2028) = LINE SEPARATOR, chr(0x2029) = PARAGRAPH SEPARATOR,
+    # chr(0x0085) = NEXT LINE -- these split str.splitlines() but
+    # are NOT NDJSON record boundaries.
+    text_with_seps = f"a{chr(0x2028)}b{chr(0x2029)}c{chr(0x0085)}d"
+    rec = {"id": "d1", "text": text_with_seps}
+    body = (json.dumps(rec, ensure_ascii=False) + chr(10)).encode()
+    s3.get_object.return_value = {"Body": io.BytesIO(body)}
+    out = read_jsonl_from_s3(s3, "s3://b/k")
+    assert len(out) == 1
+    assert out[0]["text"] == text_with_seps
+
 def test_compute_top_k_orders_by_cosine():
     encoder = MagicMock()
     encoder.encode.side_effect = [

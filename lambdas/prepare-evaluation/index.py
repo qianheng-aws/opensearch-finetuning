@@ -39,7 +39,9 @@ def extract_eval_queries_from_tarball(tarbytes: bytes) -> list[dict]:
             raise ValueError("eval_queries.jsonl is not a regular file")
         text = f.read().decode("utf-8")
     out: list[dict] = []
-    for line_num, line in enumerate(text.splitlines(), start=1):
+    # NDJSON is strictly newline-delimited; using str.splitlines() also splits
+    # on Unicode line separators (U+2028 etc) and would corrupt records.
+    for line_num, line in enumerate(text.split("\n"), start=1):
         line = line.strip()
         if not line:
             continue

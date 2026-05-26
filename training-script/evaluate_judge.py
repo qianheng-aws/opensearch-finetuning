@@ -58,7 +58,11 @@ def _read_jsonl(s3, uri: str) -> list[dict]:
     bucket, key = parse_s3_uri(uri)
     obj = s3.get_object(Bucket=bucket, Key=key)
     text = obj["Body"].read().decode("utf-8")
-    return [json.loads(l) for l in text.splitlines() if l.strip()]
+    # NDJSON is strictly newline-delimited; do NOT use str.splitlines() because
+    # it also splits on Unicode line separators (e.g. U+2028) that legitimately
+    # appear inside JSON-escaped doc text and would break a single record into
+    # multiple "lines".
+    return [json.loads(l) for l in text.split("\n") if l.strip()]
 
 
 def _put_json(s3, uri: str, payload: dict) -> None:
