@@ -303,6 +303,11 @@ Parameters:
     Description: "URL to Register Model Lambda zip (GitHub release)"
     Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.0/register-model-lambda.zip"
 
+  PrepareEvaluationLambdaZipUrl:
+    Type: String
+    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.0/prepare-evaluation-lambda.zip"
+    Description: "S3/HTTPS URL of the prepare-evaluation Lambda zip."
+
   TrainingScriptZipUrl:
     Type: String
     Description: "URL to training script tar.gz (GitHub release)"
@@ -516,6 +521,19 @@ Resources:
                   - bedrock:InvokeModel
                 Resource: "*"
 
+  # Evaluation Results Table — Stage C writes the per-task evaluation report here
+  EvaluationResultsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${ModelName}-EvaluationResults"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: task_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: task_id
+          KeyType: HASH
+
   # SageMaker Training Role
   SageMakerTrainingRole:
     Type: AWS::IAM::Role
@@ -549,6 +567,25 @@ Resources:
                   - s3:GetObject
                   - s3:ListBucket
                 Resource: "*"
+        - PolicyName: BedrockInvokeJudge
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - !Sub "arn:${AWS::Partition}:bedrock:*:*:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+        - PolicyName: DynamoDbWriteEvaluation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt EvaluationResultsTable.Arn
 
   # SageMaker Endpoint Role
   SageMakerEndpointRole:
@@ -647,6 +684,7 @@ Resources:
                   - !GetAtt S3ValidatorLambda.Arn
                   - !GetAtt BedrockOrchestratorLambda.Arn
                   - !GetAtt RegisterModelLambda.Arn
+                  - !GetAtt PrepareEvaluationLambda.Arn
         - PolicyName: SageMakerAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -850,6 +888,8 @@ Resources:
           s3_key: "lambda-zips/bedrock-orchestrator.zip"
         - url: !Ref RegisterModelLambdaZipUrl
           s3_key: "lambda-zips/register-model.zip"
+        - url: !Ref PrepareEvaluationLambdaZipUrl
+          s3_key: "lambda-zips/prepare-evaluation.zip"
         - url: !Ref TrainingScriptZipUrl
           s3_key: "training-scripts/training-script.tar.gz"
 
@@ -932,6 +972,25 @@ Resources:
         Variables:
           DATA_BUCKET: !Ref DataBucket
           OPENSEARCH_REMOTE_INFERENCE_ROLE_ARN: !GetAtt OpenSearchRemoteInferenceRole.Arn
+
+  # Prepare Evaluation Lambda — Stage A of the evaluation pipeline.
+  # Runs kNN against AOSS, samples queries, writes 3 JSONL artifacts to S3.
+  PrepareEvaluationLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: DownloadLambdaZips
+    Properties:
+      FunctionName: !Sub "${ModelName}-PrepareEvaluation"
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 900
+      MemorySize: 1024
+      Role: !GetAtt FineTuningLambdaInvokeOpenSearchRole.Arn
+      Code:
+        S3Bucket: !Ref DataBucket
+        S3Key: "lambda-zips/prepare-evaluation.zip"
+      Environment:
+        Variables:
+          DATA_BUCKET: !Ref DataBucket
 
   # =============================================================================
   # CloudWatch Log Group for State Machine
@@ -1284,7 +1343,9 @@ Resources:
                       "output-s3-path.$": "$.bedrock_status_result.output_s3_path",
                       "documents-s3-path.$": "$.documents_s3_path",
                       "num-negatives": "20",
-                      "max-corpus-documents.$": "States.Format('{}', $.max_corpus_documents)"
+                      "max-corpus-documents.$": "States.Format('{}', $.max_corpus_documents)",
+                      "eval-fraction": "0.2",
+                      "seed": "42"
                     },
                     "EnableManagedSpotTraining": false
                   },
@@ -1388,6 +1449,131 @@ Resources:
                     "EnableManagedSpotTraining": false
                   },
                   "ResultPath": "$.training_job_result",
+                  "Next": "PrepareEvaluation"
+                },
+                "PrepareEvaluation": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Comment": "Stage A: sample 100 queries, kNN against AOSS, write artifacts to S3",
+                  "Parameters": {
+                    "FunctionName": "${PrepareEvaluationLambdaArn}",
+                    "Payload": {
+                      "task_id.$": "$$.Execution.Name",
+                      "model_name.$": "$.model_name",
+                      "opensearch_endpoint.$": "$.opensearch_endpoint",
+                      "opensearch_index_name.$": "$.index_name",
+                      "eval_queries_s3.$": "$.process_output_result.training_data_s3_path",
+                      "data_bucket": "${DataBucket}",
+                      "data_prefix.$": "States.Format('{}/evaluation', $.model_name)",
+                      "num_eval_queries": 100,
+                      "pool_size": 100,
+                      "top_k": 10,
+                      "seed": 42,
+                      "text_field": "text"
+                    }
+                  },
+                  "ResultSelector": {
+                    "queries_s3.$": "$.Payload.queries_s3",
+                    "pool_corpus_s3.$": "$.Payload.pool_corpus_s3",
+                    "base_top10_s3.$": "$.Payload.base_top10_s3",
+                    "ddb_table_name.$": "$.Payload.ddb_table_name",
+                    "candidate_pool_size_unique.$": "$.Payload.candidate_pool_size_unique",
+                    "num_eval_queries.$": "$.Payload.num_eval_queries"
+                  },
+                  "ResultPath": "$.evaluation_prepare_result",
+                  "Retry": [
+                    {
+                      "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+                      "IntervalSeconds": 2,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "Next": "StartSageMakerEvaluationFTEmbed"
+                },
+                "StartSageMakerEvaluationFTEmbed": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::sagemaker:createTrainingJob.sync",
+                  "Comment": "Stage B: FT model embed pool + queries, write ft_top10.jsonl",
+                  "Parameters": {
+                    "TrainingJobName.$": "States.Format('eval-ft-{}', $$.Execution.Name)",
+                    "AlgorithmSpecification": {
+                      "TrainingImage": "${TrainingImageGPU}",
+                      "TrainingInputMode": "File"
+                    },
+                    "OutputDataConfig": {
+                      "S3OutputPath.$": "States.Format('s3://${DataBucket}/{}/evaluation/ft-job/', $.model_name)"
+                    },
+                    "ResourceConfig": {
+                      "InstanceCount": 1,
+                      "InstanceType.$": "$.config.training_instance_type",
+                      "VolumeSizeInGB": 100
+                    },
+                    "StoppingCondition": {
+                      "MaxRuntimeInSeconds": 14400
+                    },
+                    "RoleArn": "${SageMakerTrainingRoleArn}",
+                    "HyperParameters": {
+                      "sagemaker_program": "evaluate_ft.py",
+                      "sagemaker_submit_directory": "s3://${DataBucket}/training-scripts/training-script.tar.gz",
+                      "queries-s3.$": "$.evaluation_prepare_result.queries_s3",
+                      "pool-s3.$": "$.evaluation_prepare_result.pool_corpus_s3",
+                      "adapter-s3.$": "$.training_job_result.ModelArtifacts.S3ModelArtifacts",
+                      "base-model-id.$": "$.base_model_id",
+                      "top-k": "10",
+                      "max-seq-length.$": "States.Format('{}', $.config.max_seq_length)",
+                      "out-s3.$": "States.Format('s3://${DataBucket}/{}/evaluation/ft_top10.jsonl', $.model_name)"
+                    },
+                    "EnableManagedSpotTraining": false
+                  },
+                  "ResultSelector": {
+                    "ft_top10_s3.$": "States.Format('s3://${DataBucket}/{}/evaluation/ft_top10.jsonl', $.model_name)"
+                  },
+                  "ResultPath": "$.evaluation_ft_result",
+                  "Next": "StartSageMakerEvaluationJudge"
+                },
+                "StartSageMakerEvaluationJudge": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::sagemaker:createTrainingJob.sync",
+                  "Comment": "Stage C: judge pairs via Bedrock, NDCG, write report to DDB + S3",
+                  "Parameters": {
+                    "TrainingJobName.$": "States.Format('eval-judge-{}', $$.Execution.Name)",
+                    "AlgorithmSpecification": {
+                      "TrainingImage": "${TrainingImageGPU}",
+                      "TrainingInputMode": "File"
+                    },
+                    "OutputDataConfig": {
+                      "S3OutputPath.$": "States.Format('s3://${DataBucket}/{}/evaluation/judge-job/', $.model_name)"
+                    },
+                    "ResourceConfig": {
+                      "InstanceCount": 1,
+                      "InstanceType": "ml.m5.xlarge",
+                      "VolumeSizeInGB": 30
+                    },
+                    "StoppingCondition": {
+                      "MaxRuntimeInSeconds": 7200
+                    },
+                    "RoleArn": "${SageMakerTrainingRoleArn}",
+                    "HyperParameters": {
+                      "sagemaker_program": "evaluate_judge.py",
+                      "sagemaker_submit_directory": "s3://${DataBucket}/training-scripts/training-script.tar.gz",
+                      "queries-s3.$": "$.evaluation_prepare_result.queries_s3",
+                      "pool-s3.$": "$.evaluation_prepare_result.pool_corpus_s3",
+                      "base-top10-s3.$": "$.evaluation_prepare_result.base_top10_s3",
+                      "ft-top10-s3.$": "$.evaluation_ft_result.ft_top10_s3",
+                      "judge-model-id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                      "judge-concurrency": "16",
+                      "top-k": "10",
+                      "bootstrap-resamples": "1000",
+                      "seed": "42",
+                      "ddb-table-name.$": "$.evaluation_prepare_result.ddb_table_name",
+                      "task-id.$": "$$.Execution.Name",
+                      "out-s3.$": "States.Format('s3://${DataBucket}/{}/evaluation/evaluation_report.json', $.model_name)",
+                      "base-model-id.$": "$.base_model_id"
+                    },
+                    "EnableManagedSpotTraining": false
+                  },
+                  "ResultPath": "$.evaluation_judge_result",
                   "Next": "CheckDeployEndpoint"
                 },
                 "CheckDeployEndpoint": {
@@ -1547,6 +1733,7 @@ Resources:
             S3ValidatorLambdaArn: !GetAtt S3ValidatorLambda.Arn
             BedrockOrchestratorLambdaArn: !GetAtt BedrockOrchestratorLambda.Arn
             RegisterModelLambdaArn: !GetAtt RegisterModelLambda.Arn
+            PrepareEvaluationLambdaArn: !GetAtt PrepareEvaluationLambda.Arn
             TrainingImageGPU: !FindInMap [RegionMap, !Ref "AWS::Region", TrainingImageGPU]
             TEIImage: !FindInMap [RegionMap, !Ref "AWS::Region", TEIImage]
             DataBucket: !Ref DataBucket
