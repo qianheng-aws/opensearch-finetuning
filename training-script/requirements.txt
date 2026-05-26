@@ -4,3 +4,4 @@ datasets==3.5.0
 accelerate==1.6.0
 bm25s
 faiss-cpu
+peft==0.14.0

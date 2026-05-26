@@ -21,9 +21,11 @@ Usage:
 import argparse
 import json
 import os
+import random as _random
 import re
 import logging
 import time
+from collections import defaultdict
 from multiprocessing import Pool
 from pathlib import Path
 from urllib.parse import urlparse
@@ -101,6 +103,39 @@ def extract_queries_from_model_output(model_output):
         return []
 
 
+def stratified_split(
+    pairs: list[dict],
+    eval_fraction: float,
+    seed: int,
+) -> tuple[list[dict], list[dict]]:
+    """Stratified-by-doc_id split of (query, doc_id, doc_text) records.
+
+    For each doc_id, deterministically shuffle its queries (random.Random(seed))
+    and take the first floor(n * eval_fraction) into eval; the rest go to train.
+    Docs with too few queries to meet the floor stay entirely in train (no
+    eval queries lost).
+    """
+    if not 0.0 <= eval_fraction <= 1.0:
+        raise ValueError(f"eval_fraction must be in [0, 1], got {eval_fraction}")
+
+    by_doc: dict[str, list[dict]] = defaultdict(list)
+    for p in pairs:
+        by_doc[p["doc_id"]].append(p)
+
+    train: list[dict] = []
+    evalp: list[dict] = []
+
+    rng = _random.Random(seed)
+    for doc_id in sorted(by_doc.keys()):
+        bucket = list(by_doc[doc_id])
+        rng.shuffle(bucket)
+        n_eval = int(len(bucket) * eval_fraction)
+        evalp.extend(bucket[:n_eval])
+        train.extend(bucket[n_eval:])
+
+    return train, evalp
+
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
@@ -120,6 +155,10 @@ def parse_args():
                         help="Number of hard negatives per query")
     parser.add_argument("--max-corpus-documents", type=int, default=0,
                         help="Max documents for BM25 corpus (0 = unlimited)")
+    parser.add_argument("--eval-fraction", type=float, default=0.0,
+                        help="Fraction of (query, doc_id) pairs held out for evaluation")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Seed for stratified split")
 
     return parser.parse_args()
 
@@ -212,10 +251,33 @@ def main():
     if not query_doc_pairs:
         raise ValueError("No query-document pairs generated")
 
-    # Extract queries and positive doc info for batch processing
-    queries = [p["query"] for p in query_doc_pairs]
-    positive_doc_ids = [p["doc_id"] for p in query_doc_pairs]
-    positive_doc_texts = [p["doc_text"] for p in query_doc_pairs]
+    # Hold out a fraction for the Evaluation stage (Phase 1 evaluation work).
+    # The held-out queries never enter HNM/training; the train portion is what
+    # the existing BM25 pipeline below operates on, unchanged.
+    train_pairs, eval_pairs = stratified_split(
+        query_doc_pairs, eval_fraction=args.eval_fraction, seed=args.seed
+    )
+    logger.info(
+        f"Stratified split (eval_fraction={args.eval_fraction}): "
+        f"{len(train_pairs)} train, {len(eval_pairs)} eval"
+    )
+
+    # Write the held-out eval set to the model channel for the downstream
+    # Evaluation SM job. Always emit the file (even if empty) so downstream
+    # consumers can rely on its existence.
+    output_dir = Path(args.model_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    eval_path = output_dir / "eval_queries.jsonl"
+    with open(eval_path, "w", encoding="utf-8") as f:
+        for p in eval_pairs:
+            f.write(json.dumps({"query": p["query"], "doc_id": p["doc_id"]},
+                               ensure_ascii=False) + "\n")
+    logger.info(f"Eval queries written to {eval_path} ({len(eval_pairs)} samples)")
+
+    # Existing BM25 mining operates on the train portion only.
+    queries = [p["query"] for p in train_pairs]
+    positive_doc_ids = [p["doc_id"] for p in train_pairs]
+    positive_doc_texts = [p["doc_text"] for p in train_pairs]
 
     # Mine hard negatives using BM25
     num_negatives = args.num_negatives
