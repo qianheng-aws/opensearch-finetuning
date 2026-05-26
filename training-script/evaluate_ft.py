@@ -56,7 +56,7 @@ def _download_and_extract_adapter(s3, adapter_s3: str, target_dir: str) -> None:
     obj = s3.get_object(Bucket=bucket, Key=key)
     raw = obj["Body"].read()
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
-        tar.extractall(target_dir)
+        tar.extractall(target_dir, filter="data")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -99,23 +99,28 @@ def load_finetuned_encoder(base_model_id: str, adapter_path: str, max_seq_length
     base = AutoModel.from_pretrained(base_model_id, trust_remote_code=False)
     peft_model = PeftModel.from_pretrained(base, adapter_path)
     merged = peft_model.merge_and_unload()
-    with tempfile.TemporaryDirectory() as tmp:
-        merged.save_pretrained(tmp)
-        for sub in (
-            "modules.json", "1_Pooling", "2_Normalize",
-            "config_sentence_transformers.json", "sentence_bert_config.json",
-            "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
-        ):
-            src = Path(adapter_path) / sub
-            dst = Path(tmp) / sub
-            if src.exists():
-                if src.is_dir():
-                    shutil.copytree(src, dst, dirs_exist_ok=True)
-                else:
-                    shutil.copy(src, dst)
-        model = SentenceTransformer(tmp, trust_remote_code=True)
-        model.max_seq_length = max_seq_length
-        return _SentenceTransformerEncoder(model)
+
+    # NOTE: We deliberately use mkdtemp (no auto-cleanup) instead of
+    # TemporaryDirectory because SentenceTransformer may lazy-load tokenizer
+    # files after construction; deleting the dir while the encoder is alive
+    # would break later .encode() calls. The container reclaims this on exit.
+    tmp = tempfile.mkdtemp(prefix="ft-merged-")
+    merged.save_pretrained(tmp)
+    for sub in (
+        "modules.json", "1_Pooling", "2_Normalize",
+        "config_sentence_transformers.json", "sentence_bert_config.json",
+        "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
+    ):
+        src = Path(adapter_path) / sub
+        dst = Path(tmp) / sub
+        if src.exists():
+            if src.is_dir():
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                shutil.copy(src, dst)
+    model = SentenceTransformer(tmp, trust_remote_code=True)
+    model.max_seq_length = max_seq_length
+    return _SentenceTransformerEncoder(model)
 
 
 class _SentenceTransformerEncoder:
