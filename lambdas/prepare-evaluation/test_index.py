@@ -148,3 +148,33 @@ def test_handler_writes_three_s3_files_and_returns_uris(monkeypatch):
     assert any(k.endswith("queries.jsonl") for k in keys)
     assert any(k.endswith("pool_corpus.jsonl") for k in keys)
     assert any(k.endswith("base_top10.jsonl") for k in keys)
+
+
+def test_handler_accepts_text_fields_comma_separated(monkeypatch):
+    payload = (json.dumps({"query": "q1", "doc_id": "d1"}) + "\n").encode()
+    tarbytes = _make_tarball_bytes({"eval_queries.jsonl": payload})
+
+    s3 = MagicMock()
+    s3.get_object.return_value = {"Body": io.BytesIO(tarbytes)}
+    s3.put_object = MagicMock()
+
+    seen_fields: list[str] = []
+    def fake_search(endpoint, index, body):
+        seen_fields.append(list(body["query"]["match"].keys())[0])
+        return {"hits": {"hits": [{"_id": "doc_a", "_source": {"title": "x"}}]}}
+
+    monkeypatch.setattr("index._build_s3_client", lambda: s3)
+    monkeypatch.setattr("index._aoss_search", fake_search)
+
+    handler({
+        "task_id": "task-1", "model_name": "m",
+        "opensearch_endpoint": "https://aoss", "opensearch_index_name": "i",
+        "eval_queries_s3": "s3://b/k", "data_bucket": "b",
+        "data_prefix": "m/evaluation", "num_eval_queries": 1, "pool_size": 1,
+        "top_k": 1, "seed": 42,
+        # Comma-separated form (as threaded from SFN $.text_fields)
+        "text_fields": "title,content",
+    }, None)
+
+    # Lambda should pick the FIRST field
+    assert seen_fields == ["title"]

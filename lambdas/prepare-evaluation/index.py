@@ -137,7 +137,12 @@ def handler(event: dict, context) -> dict:
     pool_size = int(event.get("pool_size", 100))
     top_k = int(event.get("top_k", 10))
     seed = int(event.get("seed", 42))
-    text_field = event.get("text_field", "text")
+    # Accept either text_field (single) or text_fields (comma-separated string,
+    # matching how upstream Lambdas thread the SFN $.text_fields parameter).
+    # We use the first field for kNN search; the AOSS search pipeline rewrites
+    # a single match query to kNN against the corresponding embedding field.
+    text_fields_raw = event.get("text_fields") or event.get("text_field") or "text"
+    text_field = text_fields_raw.split(",")[0].strip() or "text"
 
     s3 = _build_s3_client()
 

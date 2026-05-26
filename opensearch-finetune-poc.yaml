@@ -1469,7 +1469,7 @@ Resources:
                       "pool_size": 100,
                       "top_k": 10,
                       "seed": 42,
-                      "text_field": "text"
+                      "text_fields.$": "$.text_fields"
                     }
                   },
                   "ResultSelector": {
