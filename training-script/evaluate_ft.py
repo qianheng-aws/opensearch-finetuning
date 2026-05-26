@@ -102,7 +102,10 @@ def load_finetuned_encoder(base_model_id: str, adapter_path: str, max_seq_length
     from sentence_transformers import SentenceTransformer
     from transformers import AutoModel
 
-    base = AutoModel.from_pretrained(base_model_id, trust_remote_code=False)
+    # trust_remote_code=True is required for models that ship custom modeling
+    # code (e.g. Alibaba-NLP/gte-multilingual-base, BAAI/bge-m3 family). Same
+    # setting used elsewhere (line 127's SentenceTransformer load).
+    base = AutoModel.from_pretrained(base_model_id, trust_remote_code=True)
     peft_model = PeftModel.from_pretrained(base, adapter_path)
     merged = peft_model.merge_and_unload()
 
