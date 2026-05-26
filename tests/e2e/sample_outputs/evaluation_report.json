@@ -1,0 +1,23 @@
+{
+  "task_id": "qh-eval-poc-A-judge-1779781627",
+  "schema_version": 1,
+  "generated_at": "2026-05-26T07:54:31Z",
+  "base_model_id": "Alibaba-NLP/gte-multilingual-base",
+  "num_eval_queries": 100,
+  "candidate_pool_size_unique": 9876,
+  "judge_pairs_count": 1754,
+  "judge_model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "metrics": {
+    "ndcg_at_10": {
+      "base": 0.7112819527376527,
+      "fine_tuned": 0.9314323394035036,
+      "uplift_mean": 0.22015038666585085,
+      "uplift_ci_low": 0.18790120959337409,
+      "uplift_ci_high": 0.25558247729079914
+    }
+  },
+  "notes": [
+    "Base top-K from AOSS kNN search. FT ranked within the same candidate pool.",
+    "LLM judge (Claude Haiku) is the ground truth; eval queries were sampled from the synthetic training query pool."
+  ]
+}
